@@ -213,7 +213,7 @@ class MavenContext:
             The parent POM object, or None if no parent.
         """
 
-        if not pom.element("parent"):
+        if pom.element("parent") is None:
             return None
 
         g = pom.value("parent/groupId")
