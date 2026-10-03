@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import rich_click as click
 
 from ...config import GlobalSettings
-from ...maven import solr_search
+from ...maven import compare_versions, solr_search
 from ...parse import Coordinate
 from ...styles import (
     COORD_HELP_FULL,
@@ -38,7 +38,7 @@ _log = logging.getLogger(__name__)
     epilog=tip(
         f"Try {syntax('g:groupId a:artifactId')} for field syntax, "
         f"{COORD_HELP_FULL} for coordinates, or plain text. "
-        f"Use {syntax('*')} for wildcards and {syntax('~')} for fuzzy search."
+        f"Use {syntax('*')} for wildcards."
     ),
 )
 @click.option(
@@ -78,7 +78,7 @@ def search(
 
     The QUERY argument supports three input styles:
 
-    1. **Plain Text** - Searches across all fields (groupId, artifactId, description):
+    1. **Plain Text** - Matches groupId components and artifactId prefixes:
        - jgo search apache commons
        - jgo search junit
 
@@ -86,24 +86,19 @@ def search(
        - jgo search org.apache.commons:commons-lang3
        - jgo search junit:junit:4.13.2
 
-    3. **Field Syntax** - Direct field queries with advanced features:
+    3. **Field Syntax** - Direct field queries:
        - jgo search g:org.apache.commons a:commons-lang3
        - jgo search a:jackson-databind v:2.15*
-       - jgo search a:jacksn~ (fuzzy search)
+       - jgo search g:org.scijava AND NOT a:scijava*
 
     Field names:
       - g:groupId - Search by group ID
       - a:artifactId - Search by artifact ID
       - v:version - Search by version
       - p:packaging - Search by packaging type (jar, pom, etc.)
-      - c:classifier - Search by classifier
 
-    Advanced features (work with field syntax only):
-      - Wildcards: Use * for multiple characters, ? for single character
-        Example: jgo search a:jackson-*
-      - Fuzzy Search: Use ~ for typo tolerance (edit distance 0-2)
-        Example: jgo search a:jacksn~ (finds "jackson")
-        Example: jgo search a:scijav~1 (edit distance 1)
+    Terms are combined with AND, unless the query includes explicit
+    AND, OR, or NOT operators. Use * as a wildcard, e.g. a:jackson-*.
 
     Args:
         query: One or more search terms
@@ -174,7 +169,7 @@ def execute(
 
     # Search Maven Central
     try:
-        results = _search_maven_central(query, limit)
+        results = _search_maven_central(query, limit, args.timeout)
 
         if not results:
             console_print(f"No artifacts found for query: {query}")
@@ -196,9 +191,9 @@ def _convert_query_to_solr(query: str) -> str:
     Convert a query to field syntax if needed.
 
     Handles three cases:
-    1. Already field syntax (has field prefixes like g:, a:, v:) → pass through
-    2. Maven coordinate format (G:A or G:A:V) → convert to SOLR AND query
-    3. Plain text → pass through for default SOLR full-text search
+    1. Maven coordinate format (G:A or G:A:V) → convert to SOLR AND query
+    2. Explicit boolean operators (AND, OR, NOT) → pass through
+    3. Otherwise → join terms with AND, matching plain text terms as prefixes
 
     Args:
         query: The search query string
@@ -206,14 +201,11 @@ def _convert_query_to_solr(query: str) -> str:
     Returns:
         SOLR-formatted query string
     """
-    # Check if already field syntax (field prefixes)
     # Common SOLR fields: g, a, v, p, c, l, ec, fc
-    if re.search(r"\b(g|a|v|p|c|l|ec|fc):", query):
-        _log.debug(f"Query already in field syntax: {query}")
-        return query
+    field_pattern = r"\b(g|a|v|p|c|l|ec|fc):"
 
     # Try parsing as Maven coordinate (contains : but not field syntax)
-    if ":" in query:
+    if ":" in query and not re.search(field_pattern, query):
         try:
             coord = Coordinate.parse(query)
             parts = [f"g:{coord.groupId}", f"a:{coord.artifactId}"]
@@ -230,18 +222,31 @@ def _convert_query_to_solr(query: str) -> str:
             # Not a valid coordinate, treat as plain text
             _log.debug(f"Failed to parse as coordinate, using as plain text: {query}")
 
-    # Plain text - pass through
-    _log.debug(f"Using plain text query: {query}")
-    return query
+    terms = query.split()
+    if any(t in ("AND", "OR", "NOT") for t in terms):
+        _log.debug(f"Query has explicit operators: {query}")
+        return query
+
+    # Note: Maven Central rejects terms not joined by an operator, and matches
+    # a bare term only against a whole groupId component or an entire
+    # artifactId, so plain text terms become prefix matches.
+    terms = [
+        t if re.search(field_pattern, t) or re.search(r"[*?]", t) else f"{t}*"
+        for t in terms
+    ]
+    solr_query = " AND ".join(terms)
+    _log.debug(f"Converted query '{query}' to SOLR: {solr_query}")
+    return solr_query
 
 
-def _search_maven_central(query: str, limit: int) -> list[dict]:
+def _search_maven_central(query: str, limit: int, timeout: int = 10) -> list[dict]:
     """
     Search Maven Central using the SOLR API.
 
     Args:
         query: Search query
         limit: Maximum number of results
+        timeout: Socket timeout in seconds
 
     Returns:
         List of artifact dictionaries
@@ -249,11 +254,32 @@ def _search_maven_central(query: str, limit: int) -> list[dict]:
     # Convert query to field syntax if needed
     solr_query = _convert_query_to_solr(query)
 
-    docs = solr_search(solr_query, rows=limit)
+    # Note: A query naming both groupId and artifactId, or a version, yields one
+    # document per version, so fetch them all in order to find the latest.
+    per_version = re.search(r"\bv:", solr_query) or (
+        re.search(r"\bg:", solr_query) and re.search(r"\ba:", solr_query)
+    )
+    rows = max(limit, 1000) if per_version else limit
+
+    docs = solr_search(solr_query, rows=rows, timeout=timeout)
 
     # Convert to simplified format
     results = []
+    by_ga: dict[tuple[str, str], dict] = {}
     for doc in docs:
+        # Note: Field queries (e.g. g:... AND a:...) yield one document per
+        # version, with no latestVersion, so merge them into one result.
+        ga = (doc.get("g", ""), doc.get("a", ""))
+        version = doc.get("latestVersion") or doc.get("v", "")
+        if ga in by_ga:
+            result = by_ga[ga]
+            result["version_count"] += 1
+            if compare_versions(version, result["latest_version"]) > 0:
+                result["latest_version"] = version
+                if "timestamp" in doc:
+                    result["last_updated"] = doc["timestamp"]
+            continue
+
         # Extract description from text array (if available)
         # The text array contains various searchable text, so we need to be selective
         description = ""
@@ -275,10 +301,10 @@ def _search_maven_central(query: str, limit: int) -> list[dict]:
                 break
 
         result = {
-            "group_id": doc.get("g", ""),
-            "artifact_id": doc.get("a", ""),
-            "latest_version": doc.get("latestVersion", ""),
-            "version_count": doc.get("versionCount", 0),
+            "group_id": ga[0],
+            "artifact_id": ga[1],
+            "latest_version": version,
+            "version_count": doc.get("versionCount") or 1,
             "packaging": doc.get("p", "jar"),  # Packaging type (jar, pom, etc.)
             "description": description,
         }
@@ -287,9 +313,10 @@ def _search_maven_central(query: str, limit: int) -> list[dict]:
         if "timestamp" in doc:
             result["last_updated"] = doc["timestamp"]
 
+        by_ga[ga] = result
         results.append(result)
 
-    return results
+    return results[:limit]
 
 
 def _display_results(results: list[dict], detailed: bool = False) -> None:

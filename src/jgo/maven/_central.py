@@ -18,7 +18,9 @@ from ..parse import Coordinate
 
 _log = logging.getLogger(__name__)
 
-SEARCH_URL = "https://search.maven.org/solrsearch/select"
+# Note: search.maven.org serves the same API, but its index is stale and
+# uncached queries routinely stall for 30+ seconds.
+SEARCH_URL = "https://central.sonatype.com/solrsearch/select"
 
 DEFAULT_TIMEOUT = 10
 

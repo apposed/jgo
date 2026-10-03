@@ -31,7 +31,7 @@ def test_solr_search_query_url():
         solr_search('1:"abc"', rows=5)
 
     url = mock_urlopen.call_args[0][0]
-    assert url.startswith("https://search.maven.org/solrsearch/select?")
+    assert url.startswith("https://central.sonatype.com/solrsearch/select?")
     assert "q=1%3A%22abc%22" in url
     assert "rows=5" in url
     assert "wt=json" in url

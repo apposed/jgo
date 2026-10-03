@@ -35,7 +35,7 @@ Test search --help shows usage.
                                                                                   
    TIP: Try g:groupId a:artifactId for field syntax,                              
    groupId:artifactId:[version:[classifier] for coordinates, or plain text. Use * 
-   for wildcards and ~ for fuzzy search.                                          
+   for wildcards.                                                                 
                                                                                   
 
 
