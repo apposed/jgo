@@ -300,6 +300,18 @@ jgo search g:org.python a:jython*
 jgo search org.scijava:parsington
 ```
 
+Results list one line per project (`groupId:artifactId`) at its latest version.
+A query constraining the version, even `v:*`, lists every matching version
+instead, newest first:
+
+```bash
+jgo search g:org.scijava a:parsington 'v:*'
+jgo search g:net.imglib2 a:imglib2 'v:7.*'
+```
+
+Packaging (`p:`) filters by the packaging declared in each version's POM.
+Maven Central does not index classifiers, so they cannot be searched.
+
 ### `jgo config`
 
 Manage jgo configuration.

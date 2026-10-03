@@ -5,8 +5,12 @@ Unit tests for search CLI command.
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from jgo.cli._args import ParsedArgs
 from jgo.cli._commands import search as search_cmd
+
+from .test_central import mock_solr
 
 
 def test_search_maven_central_success():
@@ -41,12 +45,13 @@ def test_search_maven_central_success():
         mock_response_obj.__enter__.return_value = mock_response_obj
         mock_urlopen.return_value = mock_response_obj
 
-        results = search_cmd._search_maven_central("junit", 10)
+        results, truncated = search_cmd._search_maven_central("junit", 10)
 
     assert len(results) == 2
+    assert not truncated
     assert results[0]["group_id"] == "junit"
     assert results[0]["artifact_id"] == "junit"
-    assert results[0]["latest_version"] == "4.13.2"
+    assert results[0]["version"] == "4.13.2"
     assert results[1]["group_id"] == "org.junit.jupiter"
 
 
@@ -60,7 +65,7 @@ def test_search_maven_central_empty_results():
         mock_response_obj.__enter__.return_value = mock_response_obj
         mock_urlopen.return_value = mock_response_obj
 
-        results = search_cmd._search_maven_central("nonexistent", 10)
+        results, _ = search_cmd._search_maven_central("nonexistent", 10)
 
     assert len(results) == 0
 
@@ -98,11 +103,28 @@ def test_search_maven_central_per_version_docs():
         mock_response_obj.__enter__.return_value = mock_response_obj
         mock_urlopen.return_value = mock_response_obj
 
-        results = search_cmd._search_maven_central("org.scijava:parsington", 10)
+        results, _ = search_cmd._search_maven_central("org.scijava:parsington", 10)
 
     assert len(results) == 1
-    assert results[0]["latest_version"] == "3.3.0"
+    assert results[0]["version"] == "3.3.0"
     assert results[0]["version_count"] == 3
+
+
+def test_search_maven_central_versions():
+    """A version constraint lists each matching version, newest first."""
+    docs = [
+        {"g": "org.scijava", "a": "parsington", "v": v}
+        for v in ["2.0.0", "3.3.0", "1.0.4", "3.1.0"]
+    ]
+
+    with mock_solr(docs):
+        results, truncated = search_cmd._search_maven_central(
+            "g:org.scijava a:parsington v:*", 3
+        )
+
+    assert [r["version"] for r in results] == ["3.3.0", "3.1.0", "2.0.0"]
+    assert truncated
+    assert all("version_count" not in r for r in results)
 
 
 def test_search_execute_success():
@@ -110,15 +132,17 @@ def test_search_execute_success():
     args = ParsedArgs(verbose=0, dry_run=False)
 
     with patch("jgo.cli._commands.search._search_maven_central") as mock_search:
-        mock_search.return_value = [
-            {
-                "group_id": "junit",
-                "artifact_id": "junit",
-                "latest_version": "4.13.2",
-                "version_count": 30,
-                "description": "jar",
-            }
-        ]
+        mock_search.return_value = (
+            [
+                {
+                    "group_id": "junit",
+                    "artifact_id": "junit",
+                    "version": "4.13.2",
+                    "version_count": 30,
+                }
+            ],
+            False,
+        )
 
         with patch("jgo.cli._commands.search._display_results"):
             exit_code = search_cmd.execute(args, {}, query="junit", limit=10)
@@ -152,9 +176,8 @@ def test_search_display_results():
         {
             "group_id": "junit",
             "artifact_id": "junit",
-            "latest_version": "4.13.2",
+            "version": "4.13.2",
             "version_count": 30,
-            "description": "jar",
             "last_updated": 1614000000000,
         }
     ]
@@ -186,3 +209,21 @@ def test_convert_field_query():
     assert convert("g:org.scijava parsington") == "g:org.scijava AND parsington*"
     assert convert("jython OR jruby") == "jython OR jruby"
     assert convert("org.scijava:parsington") == "g:org.scijava AND a:parsington"
+
+
+def test_convert_classifier_query():
+    """Classifiers are not indexed, so filtering by them is an error."""
+    for query in ("g:org.scijava c:tests", "org.scijava:parsington:3.1.0:tests"):
+        with pytest.raises(ValueError, match="classifier"):
+            search_cmd._convert_query_to_solr(query)
+
+
+def test_search_execute_classifier():
+    """Searching by classifier fails cleanly, without querying the server."""
+    args = ParsedArgs(verbose=0, dry_run=False)
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        exit_code = search_cmd.execute(args, {}, query="c:tests", limit=10)
+
+    assert exit_code == 1
+    mock_urlopen.assert_not_called()

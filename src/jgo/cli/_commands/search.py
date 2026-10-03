@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
+from functools import cmp_to_key
 from typing import TYPE_CHECKING
 
 import rich_click as click
@@ -89,6 +90,7 @@ def search(
     3. **Field Syntax** - Direct field queries:
        - jgo search g:org.apache.commons a:commons-lang3
        - jgo search a:jackson-databind v:2.15*
+       - jgo search g:org.scijava a:parsington v:*
        - jgo search g:org.scijava AND NOT a:scijava*
 
     Field names:
@@ -99,6 +101,13 @@ def search(
 
     Terms are combined with AND, unless the query includes explicit
     AND, OR, or NOT operators. Use * as a wildcard, e.g. a:jackson-*.
+
+    Results list one line per project (groupId:artifactId) at its latest
+    version. A query constraining the version, even v:*, lists every
+    matching version instead, newest first.
+
+    Packaging (p:) filters by the packaging declared in each version's
+    POM. Classifiers are not indexed, so cannot be searched.
 
     Args:
         query: One or more search terms
@@ -169,21 +178,31 @@ def execute(
 
     # Search Maven Central
     try:
-        results = _search_maven_central(query, limit, args.timeout)
+        results, truncated = _search_maven_central(query, limit, args.timeout)
 
         if not results:
-            console_print(f"No artifacts found for query: {query}")
+            console_print(f"No results found for query: {query}")
             return 0
 
         # Display results
         _display_results(results, detailed=detailed)
+        if truncated:
+            console_print(
+                tip(f"Showing the first {limit} results. Use --limit for more.")
+            )
 
         return 0
 
+    except ValueError as e:
+        _log.error(str(e))
+        return 1
     except Exception as e:
         _log.error(f"Failed to search Maven Central: {e}")
         log_exception_if_verbose(args.verbose)
         return 1
+
+
+_NO_CLASSIFIERS = "Maven Central search cannot filter by classifier"
 
 
 def _convert_query_to_solr(query: str) -> str:
@@ -200,27 +219,37 @@ def _convert_query_to_solr(query: str) -> str:
 
     Returns:
         SOLR-formatted query string
+
+    Raises:
+        ValueError: if the query filters by classifier, which the search API
+            does not index.
     """
     # Common SOLR fields: g, a, v, p, c, l, ec, fc
     field_pattern = r"\b(g|a|v|p|c|l|ec|fc):"
 
+    if re.search(r"\b(c|l):", query):
+        raise ValueError(_NO_CLASSIFIERS)
+
     # Try parsing as Maven coordinate (contains : but not field syntax)
+    coord = None
     if ":" in query and not re.search(field_pattern, query):
         try:
             coord = Coordinate.parse(query)
-            parts = [f"g:{coord.groupId}", f"a:{coord.artifactId}"]
-            if coord.version:
-                parts.append(f"v:{coord.version}")
-            if coord.packaging:
-                parts.append(f"p:{coord.packaging}")
-            if coord.classifier:
-                parts.append(f"c:{coord.classifier}")
-            solr_query = " AND ".join(parts)
-            _log.debug(f"Converted coordinate '{query}' to SOLR: {solr_query}")
-            return solr_query
         except ValueError:
             # Not a valid coordinate, treat as plain text
             _log.debug(f"Failed to parse as coordinate, using as plain text: {query}")
+
+    if coord:
+        if coord.classifier:
+            raise ValueError(_NO_CLASSIFIERS)
+        parts = [f"g:{coord.groupId}", f"a:{coord.artifactId}"]
+        if coord.version:
+            parts.append(f"v:{coord.version}")
+        if coord.packaging:
+            parts.append(f"p:{coord.packaging}")
+        solr_query = " AND ".join(parts)
+        _log.debug(f"Converted coordinate '{query}' to SOLR: {solr_query}")
+        return solr_query
 
     terms = query.split()
     if any(t in ("AND", "OR", "NOT") for t in terms):
@@ -239,9 +268,15 @@ def _convert_query_to_solr(query: str) -> str:
     return solr_query
 
 
-def _search_maven_central(query: str, limit: int, timeout: int = 10) -> list[dict]:
+def _search_maven_central(
+    query: str, limit: int, timeout: int = 10
+) -> tuple[list[dict], bool]:
     """
     Search Maven Central using the SOLR API.
+
+    Queries constraining the version (e.g. v:1.*) yield one result per
+    matching version, newest first; other queries yield one result per
+    project (groupId:artifactId), at its latest matching version.
 
     Args:
         query: Search query
@@ -249,17 +284,20 @@ def _search_maven_central(query: str, limit: int, timeout: int = 10) -> list[dic
         timeout: Socket timeout in seconds
 
     Returns:
-        List of artifact dictionaries
+        Tuple of (results, whether more results were available than the limit)
     """
     # Convert query to field syntax if needed
     solr_query = _convert_query_to_solr(query)
 
+    list_versions = bool(re.search(r"\bv:", solr_query))
+
     # Note: A query naming both groupId and artifactId, or a version, yields one
-    # document per version, so fetch them all in order to find the latest.
-    per_version = re.search(r"\bv:", solr_query) or (
+    # document per version, in no particular order, so fetch them all. One more
+    # row than the limit reveals whether results are being cut off.
+    per_version = list_versions or (
         re.search(r"\bg:", solr_query) and re.search(r"\ba:", solr_query)
     )
-    rows = max(limit, 1000) if per_version else limit
+    rows = max(limit + 1, 1000) if per_version else limit + 1
 
     docs = solr_search(solr_query, rows=rows, timeout=timeout)
 
@@ -267,47 +305,26 @@ def _search_maven_central(query: str, limit: int, timeout: int = 10) -> list[dic
     results = []
     by_ga: dict[tuple[str, str], dict] = {}
     for doc in docs:
-        # Note: Field queries (e.g. g:... AND a:...) yield one document per
-        # version, with no latestVersion, so merge them into one result.
         ga = (doc.get("g", ""), doc.get("a", ""))
         version = doc.get("latestVersion") or doc.get("v", "")
-        if ga in by_ga:
+        if not list_versions and ga in by_ga:
+            # Merge another version of the same project.
             result = by_ga[ga]
             result["version_count"] += 1
-            if compare_versions(version, result["latest_version"]) > 0:
-                result["latest_version"] = version
+            if compare_versions(version, result["version"]) > 0:
+                result["version"] = version
                 if "timestamp" in doc:
                     result["last_updated"] = doc["timestamp"]
             continue
 
-        # Extract description from text array (if available)
-        # The text array contains various searchable text, so we need to be selective
-        description = ""
-        if "text" in doc and isinstance(doc["text"], list):
-            # Look for text that looks like actual description (not coordinates, filenames, etc.)
-            for text in doc["text"]:
-                if not text:
-                    continue
-                # Skip if it looks like a coordinate, filename, or single word
-                if (
-                    ":" in text
-                    or "." in text[-5:]  # likely a file extension
-                    or len(text.split()) < 2  # single word, probably not a description
-                    or text.startswith("-")  # likely a classifier or flag
-                ):
-                    continue
-                # Found something that might be a description
-                description = text
-                break
-
         result = {
             "group_id": ga[0],
             "artifact_id": ga[1],
-            "latest_version": version,
-            "version_count": doc.get("versionCount") or 1,
+            "version": version,
             "packaging": doc.get("p", "jar"),  # Packaging type (jar, pom, etc.)
-            "description": description,
         }
+        if not list_versions:
+            result["version_count"] = doc.get("versionCount") or 1
 
         # Add timestamp if available
         if "timestamp" in doc:
@@ -316,7 +333,14 @@ def _search_maven_central(query: str, limit: int, timeout: int = 10) -> list[dic
         by_ga[ga] = result
         results.append(result)
 
-    return results[:limit]
+    if list_versions:
+        results.sort(
+            key=cmp_to_key(
+                lambda r1, r2: compare_versions(r2["version"], r1["version"])
+            )
+        )
+
+    return results[:limit], len(results) > limit
 
 
 def _display_results(results: list[dict], detailed: bool = False) -> None:
@@ -324,25 +348,17 @@ def _display_results(results: list[dict], detailed: bool = False) -> None:
     Display search results.
 
     Args:
-        results: List of artifact dictionaries
+        results: List of project or version dictionaries
         detailed: Show detailed metadata for each result
     """
-    console_print(f"Found {len(results)} artifacts:")
+    noun = "project" if "version_count" in results[0] else "version"
+    plural = "" if len(results) == 1 else "s"
+    console_print(f"Found {len(results)} {noun}{plural}:")
     console_print()
 
     for i, result in enumerate(results, 1):
-        group_id = result["group_id"]
-        artifact_id = result["artifact_id"]
-        version = result["latest_version"]
-
-        # Basic format: coordinate and latest version
-        coord = Coordinate(group_id, artifact_id, version)
+        coord = Coordinate(result["group_id"], result["artifact_id"], result["version"])
         console_print(f"{i}. {format_coordinate(coord)}")
-
-        # Show description by default (if available)
-        description = result.get("description", "")
-        if description:
-            console_print(f"   {description}")
 
         # Show additional details in detailed mode
         if detailed:
