@@ -11,6 +11,7 @@
 
 ### Bug fixes
 
+- **Make `--offline` actually work** -- The `--offline` flag was parsed but never passed along, so jgo kept downloading artifacts and metadata. Now artifacts must already be present locally, remote metadata is not refreshed, the `mvn` resolver runs with `-o`, Maven itself is never downloaded, and `jgo search` fails fast.
 - **Make `deplist --direct` actually work** -- The `--direct` flag was being ignored for the `deplist` command. Now it's passed through to the interior logic to handle it properly.
 - **Honor `--wrap raw` with log messages** -- Previously, commands `jgo --wrap raw info javainfo /really/long/path/to/nonexistentfile.xml` would still use Rich's smart wrapping if the ERROR output was longer than the TTY width.
 - **Sort `info versions` output** -- The reported versions list is now ordered according to Maven's versioning semantics.

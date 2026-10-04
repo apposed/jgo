@@ -59,9 +59,12 @@ def create_maven_context(args: ParsedArgs, config: dict) -> MavenContext:
             lenient=args.lenient,
         )
     elif args.resolver == "mvn":
-        mvn_command = ensure_maven_available()
+        mvn_command = ensure_maven_available(offline=args.offline)
         resolver = MvnResolver(
-            mvn_command, update=args.update, debug=is_debug_enabled()
+            mvn_command,
+            update=args.update,
+            debug=is_debug_enabled(),
+            offline=args.offline,
         )
     else:  # auto
         profile_constraints = ProfileConstraints(
@@ -105,6 +108,7 @@ def create_maven_context(args: ParsedArgs, config: dict) -> MavenContext:
         repo_cache=repo_cache,
         remote_repos=remote_repos,
         timeout=args.timeout,
+        offline=args.offline,
     )
 
 

@@ -169,6 +169,10 @@ def execute(
         )
         return 1
 
+    if args.offline:
+        _log.error("Cannot search Maven Central in offline mode")
+        return 1
+
     _log.info(f"Searching Maven Central for: {query}")
 
     # Dry run

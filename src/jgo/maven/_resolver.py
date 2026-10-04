@@ -457,10 +457,18 @@ class MvnResolver(Resolver):
     Requires Maven to be installed.
     """
 
-    def __init__(self, mvn_command: Path, update: bool = False, debug: bool = False):
+    def __init__(
+        self,
+        mvn_command: Path,
+        update: bool = False,
+        debug: bool = False,
+        offline: bool = False,
+    ):
         self.mvn_command = mvn_command
         self.mvn_flags = ["-B", "-T8"]
-        if update:
+        if offline:
+            self.mvn_flags.append("-o")
+        elif update:
             self.mvn_flags.append("-U")
         if debug:
             self.mvn_flags.append("-X")

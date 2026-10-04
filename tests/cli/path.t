@@ -35,3 +35,11 @@ An unresolvable artifact prints no paths at all, and fails.
 
   $ jgo info path junit:junit:4.13.2 org.example:does-not-exist:1.0 2>/dev/null
   [1]
+
+Offline mode resolves cached artifacts, but never downloads.
+
+  $ jgo --offline info path com.google.code.findbugs:jsr305:3.0.2
+  */com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar (glob)
+
+  $ jgo --offline info path org.example:does-not-exist:1.0 2>&1 | grep -o "offline mode is on"
+  offline mode is on

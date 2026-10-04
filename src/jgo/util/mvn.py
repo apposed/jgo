@@ -18,9 +18,12 @@ import cjdk
 _log = logging.getLogger(__name__)
 
 
-def ensure_maven_available() -> Path:
+def ensure_maven_available(offline: bool = False) -> Path:
     """
     Ensure that Maven is available, downloading it if necessary.
+
+    Args:
+        offline: If True, never download Maven; it must already be on the PATH.
 
     Returns:
         Path to the mvn command
@@ -33,6 +36,9 @@ def ensure_maven_available() -> Path:
     if mvn_path:
         _log.debug(f"Found Maven on PATH: {mvn_path}")
         return Path(mvn_path)
+
+    if offline:
+        raise RuntimeError("Maven (mvn) is not on the PATH, and offline mode is on")
 
     # Maven not found, fetch it from the remote server
     return fetch_maven()

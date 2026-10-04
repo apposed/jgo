@@ -77,6 +77,7 @@ class MavenContext:
         local_repos: list[Path] | None = None,
         remote_repos: dict[str, str] | None = None,
         timeout: int = 10,
+        offline: bool = False,
     ):
         """
         Create a Maven context.
@@ -105,6 +106,9 @@ class MavenContext:
             timeout:
                 HTTP request timeout in seconds for downloading artifacts and metadata.
                 Defaults to 10 seconds.
+            offline:
+                If True, never contact remote repositories: artifacts and metadata
+                must already be present locally.
         """
         self.repo_cache: Path = repo_cache or Path(
             environ.get("M2_REPO", default_maven_repo())
@@ -116,6 +120,7 @@ class MavenContext:
             DEFAULT_REMOTE_REPOS if remote_repos is None else remote_repos
         ).copy()
         self.timeout: int = timeout
+        self.offline: bool = offline
         self._nexus_bases: dict[str, str | None] = {}
         # Import here to avoid circular dependency
         if resolver is None:
@@ -394,6 +399,10 @@ class Project:
                      fetched even when others are still fresh. Pass 0 or None
                      to always fetch fresh data from every repo.
         """
+        if self.context.offline:
+            _log.debug(f"Offline: using cached metadata for {self}")
+            return
+
         repo_cache_dir = self.context.repo_cache / self.path_prefix
         repo_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -705,6 +714,9 @@ class Component:
         """
         if not self.resolved_version.endswith("-SNAPSHOT"):
             return
+        if self.context.offline:
+            _log.debug(f"Offline: using cached SNAPSHOT metadata for {self}")
+            return
 
         cache_dir = self.context.repo_cache / self.path_prefix
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -963,6 +975,10 @@ class Artifact:
                     return p
 
         # Artifact was not found locally; need to download it.
+        if self.context.offline:
+            raise RuntimeError(
+                f"Artifact {self} is not available locally, and offline mode is on"
+            )
         result = self.context.resolver.download(self)
         if result is None:
             raise RuntimeError(f"Could not resolve artifact: {self}")
@@ -1000,6 +1016,8 @@ class Artifact:
 
             datetime.fromtimestamp(os.path.getmtime(artifact.resolve()))
         """
+        if self.context.offline:
+            return None
         for repo_url in self.context.remote_repos.values():
             path_str = str(self.component.path_prefix).replace("\\", "/")
             url = f"{repo_url}/{path_str}/{self.filename}"
