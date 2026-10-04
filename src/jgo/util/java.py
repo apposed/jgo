@@ -188,11 +188,11 @@ class JavaLocator:
                     return system_java
                 self._maybe_log(
                     f"System Java {actual} at {system_java} does not meet "
-                    f"requirement {min_version}; fetching via cjdk..."
+                    f"requirement {min_version}; using cjdk instead"
                 )
             except RuntimeError:
                 self._maybe_log(
-                    "Could not determine system Java version; fetching via cjdk..."
+                    "Could not determine system Java version; using cjdk instead"
                 )
 
         # Fallback: use cjdk to download/cache a suitable Java.
@@ -204,7 +204,9 @@ class JavaLocator:
         else:
             version_str = required_version
 
-        self._maybe_log(f"Fetching Java {version_str} via cjdk...")
+        # Note: cjdk downloads only if the JDK is not already cached, and then
+        # shows its own progress bar, so log outcomes rather than intentions.
+        _log.debug(f"Requesting Java {self._jdk_spec(version_str)} from cjdk")
 
         try:
             # cjdk accepts version strings like "11", "17", "11+", "17+", etc.
@@ -218,7 +220,9 @@ class JavaLocator:
 
             actual_version = self._get_java_version(java_path)
             vendor_info = f" ({self.java_vendor})" if self.java_vendor else ""
-            self._maybe_log(f"Using Java {actual_version}{vendor_info} at {java_path}")
+            self._maybe_log(
+                f"Using Java {actual_version}{vendor_info} via cjdk at {java_path}"
+            )
 
             return java_path
 
@@ -249,7 +253,9 @@ class JavaLocator:
         else:
             version_str = required_version
 
-        self._maybe_log(f"Fetching Java {version_str} via cjdk (download mode)...")
+        _log.debug(
+            f"Requesting Java {self._jdk_spec(version_str)} from cjdk (download mode)"
+        )
 
         try:
             java_home = cjdk.java_home(version=version_str, vendor=self.java_vendor)
@@ -261,7 +267,9 @@ class JavaLocator:
 
             actual_version = self._get_java_version(java_path)
             vendor_info = f" ({self.java_vendor})" if self.java_vendor else ""
-            self._maybe_log(f"Using Java {actual_version}{vendor_info} at {java_path}")
+            self._maybe_log(
+                f"Using Java {actual_version}{vendor_info} via cjdk at {java_path}"
+            )
 
             return java_path
 
@@ -298,6 +306,9 @@ class JavaLocator:
                 "system Java version check may not work correctly"
             )
             return None
+
+    def _jdk_spec(self, version_str: str) -> str:
+        return f"{self.java_vendor}:{version_str}" if self.java_vendor else version_str
 
     def _maybe_log(self, message) -> None:
         if self.verbose:
