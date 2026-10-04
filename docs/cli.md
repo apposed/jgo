@@ -243,8 +243,32 @@ jgo info mains [ENDPOINT]           # Show classes with public main methods
 jgo info coords TARGET...           # Show coordinates a JAR was built from
 jgo info manifest TARGET            # Show JAR manifest
 jgo info pom TARGET                 # Show POM content
+jgo info path COORDINATE...         # Show local file path of an artifact
 jgo info envdir [ENDPOINT]          # Show environment directory path
 ```
+
+#### Getting an artifact's file
+
+`jgo info path` resolves one or more artifacts into the local Maven repository cache,
+downloading them as needed, and prints each file's path, one per line. It composes with
+ordinary shell tools, such as `cp` and `ln`:
+
+```bash
+# Copy a JAR to the current directory
+cp "$(jgo info path org.scijava:script-editor:1.4.0)" .
+
+# Symlink it instead
+ln -s "$(jgo info path org.scijava:script-editor:1.4.0)" plugins/
+
+# Other packagings and classifiers work too
+jgo info path org.scijava:script-editor:pom:1.4.0
+jgo info path org.scijava:script-editor:jar:sources:1.4.0
+```
+
+The paths point into the local repository cache (typically `~/.m2/repository`), not
+into a jgo environment. Only the named artifacts are resolved, not their dependencies;
+for the whole dependency set, use `jgo info jars`. If any artifact fails to resolve,
+jgo prints no paths and exits with an error.
 
 #### Identifying local JAR files
 
@@ -430,6 +454,9 @@ jgo info mains org.scijava:parsington
 
 # Identify the artifact a local JAR was built from
 jgo info coords /path/to/mystery.jar
+
+# Copy an artifact's JAR to the current directory
+cp "$(jgo info path org.scijava:parsington)" .
 ```
 
 ### Working with Java versions

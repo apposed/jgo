@@ -23,6 +23,7 @@ Test info with no subcommand shows help.
   │ mains            Show classes with public main methods.                      │
   │ manifest         Show JAR manifest.                                          │
   │ modulepath       Show module-path.                                           │
+  │ path             Show local file path of an artifact.                        │
   │ pom              Show POM content.                                           │
   │ versions         List available versions of an artifact.                     │
   ╰──────────────────────────────────────────────────────────────────────────────╯

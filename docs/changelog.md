@@ -6,6 +6,7 @@
 
 - **Local POM file support** -- `jgo list` and `jgo tree` now support local POM file paths.
 - **Identify local JAR files** -- The new `jgo info coords` subcommand reports the Maven coordinate(s) a JAR appears to have been built from, reading the metadata embedded under `META-INF/maven`, falling back to manifest attributes, and -- with `--remote` -- identifying otherwise unknown JARs by SHA-1 checksum via Maven Central. Uber-JARs report the coordinates they bundle as well (`--all`). Relatedly, `jgo info manifest` and `jgo info pom` now accept the path of a local JAR file wherever they accept a Maven coordinate, with `jgo info pom` dumping the JAR's embedded POM(s).
+- **Get an artifact's file** -- The new `jgo info path` subcommand resolves Maven coordinates into the local repository cache, downloading as needed, and prints each artifact's file path, one per line. Any packaging or classifier works. This makes it easy to compose with shell tools, e.g. `cp "$(jgo info path g:a:v)" .` to copy a JAR into the current directory.
 - **More flexible `javainfo` subcommand** -- The `jgo info javainfo` command now accepts a list of arguments, each of which can be a Maven coordinate, a POM file or directory containing such, a JAR file, a class file, or a directory to scan recursively for such files. Each argument is analyzed and reported upon, and finally a summary is issued.
 
 ### Bug fixes

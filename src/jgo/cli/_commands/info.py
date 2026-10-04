@@ -590,6 +590,35 @@ def _central_coordinates(jar_path: Path) -> list[JarCoordinate]:
     ]
 
 
+@click.command(name="path", help="Show local file path of an artifact.")
+@click.argument(
+    "targets",
+    nargs=-1,
+    required=True,
+    cls=click.RichArgument,
+    help=f"Maven coordinates in format {COORD_HELP_FULL}",
+)
+@click.pass_context
+def path_cmd(ctx: click.Context, targets: tuple[str, ...]) -> None:
+    """Show the local repository path of each artifact, downloading as needed.
+
+    Prints one path per line, in the order given, so the output composes with
+    other tools, e.g. cp "$(jgo info path g:a:v)" .
+    """
+
+    opts = ctx.obj
+    config = GlobalSettings.load_from_opts(opts)
+    args = build_parsed_args(opts, endpoint=None, command="info")
+    maven_context = create_maven_context(args, config.to_dict())
+
+    # Note: Resolve everything before printing, so a failure prints no paths.
+    paths = [_resolve_artifact_or_die(ctx, t, maven_context) for t in targets]
+    for p in paths:
+        # Note: Plain echo, so Rich never wraps or marks up a path.
+        click.echo(str(p))
+    ctx.exit(0)
+
+
 @click.command(help="Show JAR manifest.")
 @click.argument(
     "target",
@@ -774,10 +803,27 @@ def _resolve_jar_or_die(ctx: click.Context, target: str) -> Path:
     if jar_path is not None:
         return jar_path
 
-    opts = ctx.obj
-    config = GlobalSettings.load_from_opts(opts)
-    args = build_parsed_args(opts, endpoint=target, command="info")
-    maven_context = create_maven_context(args, config.to_dict())
+    resolved = _resolve_artifact_or_die(ctx, target)
+    if not zipfile.is_zipfile(resolved):
+        _log.error(f"Not a valid JAR file: {resolved}")
+        ctx.exit(1)
+    return resolved
+
+
+def _resolve_artifact_or_die(
+    ctx: click.Context, target: str, maven_context: MavenContext | None = None
+) -> Path:
+    """
+    Resolve a Maven coordinate to a file in the local repository cache.
+
+    Downloads the artifact if needed. Any packaging is accepted, not only JARs.
+    Exits with an error if the artifact cannot be resolved.
+    """
+    if maven_context is None:
+        opts = ctx.obj
+        config = GlobalSettings.load_from_opts(opts)
+        args = build_parsed_args(opts, endpoint=target, command="info")
+        maven_context = create_maven_context(args, config.to_dict())
 
     coord = _parse_coord_or_die(ctx, target)
     component = maven_context.project(coord.groupId, coord.artifactId).at_version(
@@ -787,13 +833,14 @@ def _resolve_jar_or_die(ctx: click.Context, target: str) -> Path:
         classifier=coord.classifier or "",
         packaging=coord.packaging or "jar",
     )
-    resolved = artifact.resolve()
-
-    if not resolved:
-        _log.error(f"Could not resolve artifact: {target}")
+    try:
+        resolved = artifact.resolve()
+    except Exception as e:
+        _log.error(f"Could not resolve artifact: {target}: {e}")
         ctx.exit(1)
-    if not zipfile.is_zipfile(resolved):
-        _log.error(f"Not a valid JAR file: {resolved}")
+
+    if not resolved or not resolved.exists():
+        _log.error(f"Could not resolve artifact: {target}")
         ctx.exit(1)
     return resolved
 

@@ -33,6 +33,7 @@ from ._commands.info import (
     mains,
     manifest,
     modulepath,
+    path_cmd,
     pom,
 )
 from ._commands.init import init
@@ -446,6 +447,7 @@ def info(ctx: click.Context) -> None:
       deptree       - Show dependency tree
       deplist       - Show flat list of dependencies
       envdir        - Show environment directory path
+      path          - Show local file path of an artifact
       javainfo      - Show Java version requirements
       entrypoints   - Show entrypoints from jgo.toml
       versions      - List available versions of an artifact
@@ -457,6 +459,7 @@ def info(ctx: click.Context) -> None:
       jgo info mains org.scijava:scijava-common
       jgo info modulepath org.scijava:scijava-common
       jgo info envdir org.scijava:scijava-common
+      jgo info path org.scijava:scijava-common:2.99.0
       jgo info javainfo org.scijava:scijava-common
       jgo info deptree org.scijava:scijava-common
       jgo info versions org.python:jython-standalone
@@ -482,6 +485,7 @@ info.add_command(javainfo)
 info.add_command(mains)
 info.add_command(manifest)
 info.add_command(modulepath)
+info.add_command(path_cmd)
 info.add_command(pom)
 info.add_command(versions)
 
