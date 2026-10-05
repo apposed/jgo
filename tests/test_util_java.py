@@ -72,6 +72,14 @@ class TestParseJavaVersion:
         assert parse_java_version("17.0.2") == JavaVersion(17, 0, 2)
         assert parse_java_version("21.0.1") == JavaVersion(21, 0, 1)
 
+    def test_new_format_with_pre_build_opt(self):
+        assert parse_java_version("11.0.2+9") == JavaVersion(11, 0, 2)
+        assert parse_java_version("11.0.9.1-internal") == JavaVersion(11, 0, 9)
+        assert parse_java_version(
+            "11.0.31+11-post-1ubuntu1-24.04.2-Ubuntu") == JavaVersion(11, 0, 31)
+        assert parse_java_version("17.0.18-internal") == JavaVersion(17, 0, 18)
+        assert parse_java_version("21+32-ea-beta") == JavaVersion(21, 0, 0)
+
     def test_whitespace_handling(self):
         assert parse_java_version("  11  ") == JavaVersion(11, 0, 0)
         assert parse_java_version("\t1.8\n") == JavaVersion(8, 0, 0)

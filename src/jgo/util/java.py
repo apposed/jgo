@@ -368,6 +368,7 @@ class JavaLocator:
             #   "java version "1.8.0_292""
             #   "openjdk version "11.0.11" 2021-04-20"
             #   "openjdk version "17.0.1" 2021-10-19"
+            #   "openjdk version "17.0.18-internal" 2026-01-20"
             match = re.search(r'version "([^"]+)"', version_output)
             if not match:
                 raise RuntimeError(
@@ -436,6 +437,7 @@ def parse_java_version(version: str) -> JavaVersion:
     Handles JVM-specific formats:
     - Old: "1.8.0_292" -> JavaVersion(8, 0, 292)
     - New: "17.0.2" -> JavaVersion(17, 0, 2)
+    - New with PRE: "17.0.18-internal"  -> JavaVersion(17, 0, 18)
 
     Args:
         version: Java version string
@@ -476,8 +478,10 @@ def parse_java_version(version: str) -> JavaVersion:
 
             return JavaVersion(major, minor, patch)
         else:
-            # New format (x.y.z)
-            parts = version.split(".")
+            # New format (x.y.z[-PRE][+BUILD][-OPT]), JEP 223 grammar
+            # Note: JEP 322 revised the semantics but kept this grammar
+            vnum = re.split(r"[-+]", version, maxsplit=1)[0]
+            parts = vnum.split(".")
             major = int(parts[0])
             minor = int(parts[1]) if len(parts) > 1 else 0
             patch = int(parts[2]) if len(parts) > 2 else 0
