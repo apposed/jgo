@@ -106,6 +106,7 @@ class MavenContext:
         update: bool = False,
         miss_ttl: int = DEFAULT_MISS_TTL,
         fail_on_denied: bool = False,
+        min_interval: float = 0,
     ):
         """
         Create a Maven context.
@@ -148,6 +149,11 @@ class MavenContext:
             fail_on_denied:
                 If True, raise RepositoryAccessDenied on an HTTP 401/403 instead
                 of warning and treating it as a miss.
+            min_interval:
+                Minimum seconds between requests to each remote repository's
+                host, across all threads (0 for no limit). Bounds the request
+                rate of heavy, parallel resolution independently of its
+                thread count. Applies process-wide to those hosts.
         """
         self.repo_cache: Path = repo_cache or Path(
             environ.get("M2_REPO", default_maven_repo())
@@ -163,6 +169,11 @@ class MavenContext:
         self.update: bool = update
         self.miss_ttl: int = miss_ttl
         self.fail_on_denied: bool = fail_on_denied
+        if min_interval:
+            from urllib.parse import urlparse
+
+            for url in self.remote_repos.values():
+                http.throttle(urlparse(url).netloc, min_interval)
         self._nexus_bases: dict[str, str | None] = {}
         # Import here to avoid circular dependency
         if resolver is None:
