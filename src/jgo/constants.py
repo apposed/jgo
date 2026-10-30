@@ -41,6 +41,12 @@ VERSION = _get_version()
 # Maven repository URLs
 MAVEN_CENTRAL_URL = "https://repo.maven.apache.org/maven2"
 
+# Hosts serving Maven Central, whose releases are immutable once published.
+MAVEN_CENTRAL_HOSTS = frozenset({"repo.maven.apache.org", "repo1.maven.org"})
+
+# How long a remote 404 for an artifact is cached (seconds).
+DEFAULT_MISS_TTL = 24 * 60 * 60
+
 # Config file display names (these are truly constant)
 SETTINGS_FILE_DISPLAY_NAME = "jgo config file"
 SETTINGS_FILE_XDG_NAME = "~/.config/jgo.conf"

@@ -7,11 +7,13 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
+import time
 from subprocess import run
 from typing import TYPE_CHECKING
 
 import requests
 
+from ..constants import MAVEN_CENTRAL_HOSTS
 from ..parse import Coordinate
 from ..util import http
 from . import Resolver
@@ -187,6 +189,40 @@ def _verify_remote_sha1(
         _log.debug(f"Checksum verified: {filename}")
 
 
+def _miss_sentinel(artifact: Artifact, repo_name: str) -> Path | None:
+    """
+    Where a remote 404 for ``artifact`` from ``repo_name`` is recorded, or None
+    if misses are not cached for it (SNAPSHOTs change, so they never are).
+    """
+    cached = artifact.cached_path
+    if cached is None or artifact.version.endswith("-SNAPSHOT"):
+        return None
+    if not artifact.context.miss_ttl:
+        return None
+    return cached.with_name(f"{cached.name}-{repo_name}.404")
+
+
+def _miss_is_fresh(artifact: Artifact, miss: Path, repo_url: str) -> bool:
+    """
+    Whether a recorded 404 still stands, so the request can be skipped.
+
+    A miss expires after the context's ``miss_ttl``, except on Maven Central once
+    the artifact's version is known to exist (its POM is cached): Central releases
+    are immutable, so e.g. a missing -javadoc classifier can never appear later.
+    ``update`` (``jgo -u``) disregards all recorded misses.
+    """
+    from urllib.parse import urlparse
+
+    context = artifact.context
+    if context.update or not miss.exists():
+        return False
+    if urlparse(repo_url).netloc in MAVEN_CENTRAL_HOSTS:
+        pom = artifact.component.artifact(type="pom").cached_path
+        if pom is not None and pom.exists():
+            return True
+    return (time.time() - miss.stat().st_mtime) < context.miss_ttl
+
+
 class PythonResolver(Resolver):
     """
     A resolver that works by pure Python code.
@@ -247,56 +283,70 @@ class PythonResolver(Resolver):
                     "Attempting download with SNAPSHOT version..."
                 )
 
-        for remote_repo in artifact.context.remote_repos.values():
+        context = artifact.context
+        for repo_name, remote_repo in context.remote_repos.items():
             # Convert Path to forward-slash string for URL
             path_str = str(artifact.component.path_prefix).replace("\\", "/")
             url = f"{remote_repo}/{path_str}/{artifact.filename}"
+
+            miss = _miss_sentinel(artifact, repo_name)
+            if miss is not None and _miss_is_fresh(artifact, miss, remote_repo):
+                _log.debug(f"Skipping {url} (cached 404)")
+                continue
             _log.debug(f"Trying {url}")
 
             # Use streaming to enable progress bar
             response: requests.Response = http.get(
-                url, stream=True, timeout=artifact.context.timeout
+                url, stream=True, timeout=context.timeout
             )
-            if response.status_code == 200:
-                # Remote artifact accessed successfully
-                cached_file = artifact.cached_path
-                assert cached_file is not None
-                assert not cached_file.exists()
-                cached_file.parent.mkdir(parents=True, exist_ok=True)
+            if response.status_code != 200:
+                http.check_denied(response, url, context.fail_on_denied)
+                if response.status_code == 404 and miss is not None:
+                    miss.parent.mkdir(parents=True, exist_ok=True)
+                    miss.touch()
+                response.close()
+                continue
+            if miss is not None:
+                miss.unlink(missing_ok=True)
+            # Remote artifact accessed successfully
+            cached_file = artifact.cached_path
+            assert cached_file is not None
+            assert not cached_file.exists()
+            cached_file.parent.mkdir(parents=True, exist_ok=True)
 
-                # Get total size from Content-Length header
-                total_size = int(response.headers.get("content-length", 0))
+            # Get total size from Content-Length header
+            total_size = int(response.headers.get("content-length", 0))
 
-                # Hash while streaming to avoid re-reading the file for checksum verification
-                sha1 = hashlib.sha1()
+            # Hash while streaming to avoid re-reading the file for checksum verification
+            sha1 = hashlib.sha1()
 
-                # Use progress callback if provided and size is known
-                if self.progress_callback and total_size > 0:
-                    with (
-                        self.progress_callback(
-                            artifact.filename, total_size
-                        ) as update_progress,
-                        open(cached_file, "wb") as f,
-                    ):
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                            sha1.update(chunk)
-                            update_progress(len(chunk))
-                else:
-                    with open(cached_file, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                            sha1.update(chunk)
+            # Use progress callback if provided and size is known
+            if self.progress_callback and total_size > 0:
+                with (
+                    self.progress_callback(
+                        artifact.filename, total_size
+                    ) as update_progress,
+                    open(cached_file, "wb") as f,
+                ):
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        sha1.update(chunk)
+                        update_progress(len(chunk))
+            else:
+                with open(cached_file, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        sha1.update(chunk)
 
-                _verify_remote_sha1(
-                    url, sha1.hexdigest(), artifact.filename, artifact.context.timeout
-                )
+            _verify_remote_sha1(
+                url, sha1.hexdigest(), artifact.filename, artifact.context.timeout
+            )
 
-                if is_snapshot:
-                    _log.info(f"Downloaded SNAPSHOT {artifact} to {cached_file}")
-                else:
-                    _log.debug(f"Downloaded {artifact} to {cached_file}")
-                return cached_file
+            if is_snapshot:
+                _log.info(f"Downloaded SNAPSHOT {artifact} to {cached_file}")
+            else:
+                _log.debug(f"Downloaded {artifact} to {cached_file}")
+            return cached_file
 
         raise RuntimeError(
             f"Artifact {artifact} not found in remote repositories "

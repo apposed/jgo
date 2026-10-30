@@ -9,6 +9,7 @@ from pathlib import Path
 from re import findall
 from typing import TYPE_CHECKING
 
+from ..util.http import RepositoryAccessDenied
 from ..util.java import (
     parse_java_version,
     parse_jdk_activation_range,
@@ -444,6 +445,8 @@ class Model:
                             next_queue.append(
                                 (dep_model, dep, dep.scope, new_exclusions)
                             )
+                        except RepositoryAccessDenied:
+                            raise
                         except (OSError, ValueError, RuntimeError, KeyError) as e:
                             _log.debug(f"Could not build model for {dep}: {e}")
 

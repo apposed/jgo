@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 
 import requests
 
-from ..constants import MAVEN_CENTRAL_URL, default_maven_repo
+from ..constants import DEFAULT_MISS_TTL, MAVEN_CENTRAL_URL, default_maven_repo
 from ..parse import Coordinate, coord2str
 from ..util import http
 from ..util.io import binary, text
@@ -103,6 +103,9 @@ class MavenContext:
         remote_repos: dict[str, str] | None = None,
         timeout: int = 10,
         offline: bool = False,
+        update: bool = False,
+        miss_ttl: int = DEFAULT_MISS_TTL,
+        fail_on_denied: bool = False,
     ):
         """
         Create a Maven context.
@@ -134,6 +137,17 @@ class MavenContext:
             offline:
                 If True, never contact remote repositories: artifacts and metadata
                 must already be present locally.
+            update:
+                If True, ignore cached misses and ask the remote repositories again
+                (like Maven's -U).
+            miss_ttl:
+                Seconds for which a remote 404 for an artifact is cached, so it is
+                not re-requested on every resolution. Release artifacts missing
+                from Maven Central are cached for good once their POM is known,
+                since Central releases are immutable. Pass 0 to disable.
+            fail_on_denied:
+                If True, raise RepositoryAccessDenied on an HTTP 401/403 instead
+                of warning and treating it as a miss.
         """
         self.repo_cache: Path = repo_cache or Path(
             environ.get("M2_REPO", default_maven_repo())
@@ -146,6 +160,9 @@ class MavenContext:
         ).copy()
         self.timeout: int = timeout
         self.offline: bool = offline
+        self.update: bool = update
+        self.miss_ttl: int = miss_ttl
+        self.fail_on_denied: bool = fail_on_denied
         self._nexus_bases: dict[str, str | None] = {}
         # Import here to avoid circular dependency
         if resolver is None:
@@ -489,7 +506,13 @@ class Project:
                     _log.debug(
                         f"Could not fetch metadata for {ga} from {repo_name}: {reason}"
                     )
-                    not_found_file.touch()
+                    # Cache only a genuine miss: a denial or server error is
+                    # transient, and caching it would hide the project for max_age.
+                    http.check_denied(
+                        response, metadata_url, self.context.fail_on_denied
+                    )
+                    if response.status_code == 404:
+                        not_found_file.touch()
                     failures.append(f"  {repo_name}: {reason}")
             except requests.RequestException as e:
                 _log.debug(f"Could not fetch metadata for {ga} from {repo_name}: {e}")

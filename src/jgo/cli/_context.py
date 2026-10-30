@@ -109,6 +109,7 @@ def create_maven_context(args: ParsedArgs, config: dict) -> MavenContext:
         remote_repos=remote_repos,
         timeout=args.timeout,
         offline=args.offline,
+        update=args.update,
     )
 
 

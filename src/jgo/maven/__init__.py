@@ -125,6 +125,7 @@ Example — Inspect Available Versions
 >>> [c.version for c in project.versions()]
 """
 
+from ..util.http import RepositoryAccessDenied
 from ._central import coordinates_by_sha1, solr_search
 from ._core import (
     Artifact,
@@ -179,6 +180,7 @@ __all__ = [
     # resolver
     "MvnResolver",
     "PythonResolver",
+    "RepositoryAccessDenied",
     "Resolver",
     # version
     "MavenVersion",
