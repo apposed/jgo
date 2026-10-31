@@ -190,3 +190,42 @@ def test_project_parent_properties(tmp_path):
     deps = {(d.groupId, d.artifactId): d.version for d in model.deps.values()}
     assert deps[("org.example", "parent-memory")] == "7"
     assert deps[("org.example", "inherited")] == "7"
+
+
+def test_legacy_project_aliases(tmp_path):
+    """
+    Maven 2-era ${pom.*} and unprefixed ${version}-style expressions resolve to the
+    project's coordinates, as in Maven 3 -- but a real property of the same name wins.
+    """
+    from jgo.maven import POM
+
+    pom_path = _write_pom(
+        tmp_path / "proj" / "pom.xml",
+        "  <groupId>org.example</groupId>\n"
+        "  <artifactId>legacy</artifactId>\n"
+        "  <version>2.1</version>\n"
+        "  <properties><name>from-property</name></properties>\n"
+        "  <dependencies>\n"
+        "    <dependency>\n"
+        "      <groupId>${pom.groupId}</groupId>\n"
+        "      <artifactId>a</artifactId>\n"
+        "      <version>${pom.version}</version>\n"
+        "    </dependency>\n"
+        "    <dependency>\n"
+        "      <groupId>${groupId}</groupId>\n"
+        "      <artifactId>b-${artifactId}</artifactId>\n"
+        "      <version>${version}</version>\n"
+        "    </dependency>\n"
+        "    <dependency>\n"
+        "      <groupId>org.example</groupId>\n"
+        "      <artifactId>${name}</artifactId>\n"
+        "      <version>1</version>\n"
+        "    </dependency>\n"
+        "  </dependencies>",
+    )
+    model = Model(POM(pom_path), MavenContext(repo_cache=tmp_path / "repo"))
+
+    deps = {(d.groupId, d.artifactId): d.version for d in model.deps.values()}
+    assert deps[("org.example", "a")] == "2.1"
+    assert deps[("org.example", "b-legacy")] == "2.1"
+    assert ("org.example", "from-property") in deps

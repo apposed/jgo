@@ -877,7 +877,40 @@ class Model:
 
         expression = props.get(propname, None)
         if expression is None:
-            return None
+            alias = _legacy_project_alias(propname)
+            if alias is None or alias not in props:
+                return None
+            expression = props[alias]
         evaluated = Model._evaluate(expression, props, visited)
         props[propname] = evaluated
         return evaluated
+
+
+# Model fields that Maven 2-era POMs reference without the "project." prefix,
+# e.g. ${version} or ${parent.version}.
+_UNPREFIXED_PROJECT_FIELDS = (
+    "groupId",
+    "artifactId",
+    "version",
+    "name",
+    "description",
+    "parent.groupId",
+    "parent.artifactId",
+    "parent.version",
+)
+
+
+def _legacy_project_alias(propname: str) -> str | None:
+    """
+    The ``project.*`` expression a deprecated alias stands for, or None.
+
+    Maven 3 still resolves the Maven 2 spellings ``${pom.X}`` and unprefixed
+    ``${X}`` (e.g. ``${version}``) against the model, with a deprecation warning.
+    It does so only when no property of that name exists, which is why this is
+    consulted only as a fallback after a property lookup.
+    """
+    if propname.startswith("pom."):
+        return "project." + propname[len("pom.") :]
+    if propname in _UNPREFIXED_PROJECT_FIELDS:
+        return "project." + propname
+    return None
