@@ -169,6 +169,10 @@ class MavenContext:
         self.update: bool = update
         self.miss_ttl: int = miss_ttl
         self.fail_on_denied: bool = fail_on_denied
+        # URLs of SNAPSHOT metadata/artifacts found missing in this process.
+        # SNAPSHOT misses are not cached on disk (a SNAPSHOT may be deployed at
+        # any time), but re-requesting one within a single run is pointless.
+        self.snapshot_misses: set[str] = set()
         if min_interval:
             from urllib.parse import urlparse
 
@@ -804,9 +808,17 @@ class Component:
             metadata_url = (
                 f"{repo_url}/{self.path_prefix.as_posix()}/maven-metadata.xml"
             )
+            if metadata_url in self.context.snapshot_misses and not self.context.update:
+                continue
             try:
                 _log.debug(f"Trying {metadata_url}")
                 response = http.get(metadata_url, timeout=self.context.timeout)
+                if response.status_code == 404:
+                    self.context.snapshot_misses.add(metadata_url)
+                else:
+                    http.check_denied(
+                        response, metadata_url, self.context.fail_on_denied
+                    )
                 if response.status_code == 200:
                     # Save to local cache with repo name suffix
                     metadata_file = cache_dir / f"maven-metadata-{repo_name}.xml"

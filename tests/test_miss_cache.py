@@ -186,3 +186,17 @@ def test_denied_propagates_through_lenient_model(tmp_path, requests_log):
     pom = ctx.project("org.example", "foo").at_version("1.0").pom()
     with pytest.raises(RepositoryAccessDenied):
         Model(pom, ctx, lenient=True).dependencies()
+
+
+def test_snapshot_misses_not_repeated_within_a_context(tmp_path, requests_log):
+    log, _ = requests_log
+    ctx = _context(tmp_path, {"other": OTHER})
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            _javadoc(ctx, "1.0-SNAPSHOT").resolve()
+    # One metadata and one artifact request, however often it is asked for.
+    assert len(log) == 2
+    # A new context (i.e. a new run) asks again: SNAPSHOTs may appear any time.
+    with pytest.raises(RuntimeError):
+        _javadoc(_context(tmp_path, {"other": OTHER}), "1.0-SNAPSHOT").resolve()
+    assert len(log) == 4

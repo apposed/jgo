@@ -293,6 +293,9 @@ class PythonResolver(Resolver):
             if miss is not None and _miss_is_fresh(artifact, miss, remote_repo):
                 _log.debug(f"Skipping {url} (cached 404)")
                 continue
+            if url in context.snapshot_misses and not context.update:
+                _log.debug(f"Skipping {url} (missing earlier in this run)")
+                continue
             _log.debug(f"Trying {url}")
 
             # Use streaming to enable progress bar
@@ -304,6 +307,8 @@ class PythonResolver(Resolver):
                 if response.status_code == 404 and miss is not None:
                     miss.parent.mkdir(parents=True, exist_ok=True)
                     miss.touch()
+                elif response.status_code == 404 and is_snapshot:
+                    context.snapshot_misses.add(url)
                 response.close()
                 continue
             if miss is not None:
