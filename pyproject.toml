@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jgo"
-version = "3.3.0.dev0"
+version = "3.3.0"
 description = "Launch Java code from Python and the CLI, installation-free."
 license = "Unlicense"
 authors = [{name = "Appose developers", email = "ctrueden@wisc.edu"}]
