@@ -229,3 +229,32 @@ def test_legacy_project_aliases(tmp_path):
     assert deps[("org.example", "a")] == "2.1"
     assert deps[("org.example", "b-legacy")] == "2.1"
     assert ("org.example", "from-property") in deps
+
+
+def test_legacy_alias_in_property_value(tmp_path):
+    """
+    A property whose value uses a legacy alias (e.g. ${version}) resolves without
+    the alias being added to the properties while they are being interpolated.
+    """
+    from jgo.maven import POM
+
+    pom_path = _write_pom(
+        tmp_path / "proj" / "pom.xml",
+        "  <groupId>org.example</groupId>\n"
+        "  <artifactId>legacy</artifactId>\n"
+        "  <version>1.1</version>\n"
+        "  <properties><dist.name>legacy-${version}</dist.name></properties>\n"
+        "  <dependencies>\n"
+        "    <dependency>\n"
+        "      <groupId>org.example</groupId>\n"
+        "      <artifactId>${dist.name}</artifactId>\n"
+        "      <version>${pom.version}</version>\n"
+        "    </dependency>\n"
+        "  </dependencies>",
+    )
+    model = Model(POM(pom_path), MavenContext(repo_cache=tmp_path / "repo"))
+
+    assert model.props["dist.name"] == "legacy-1.1"
+    assert "version" not in model.props
+    deps = {(d.groupId, d.artifactId): d.version for d in model.deps.values()}
+    assert deps[("org.example", "legacy-1.1")] == "1.1"

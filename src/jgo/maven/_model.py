@@ -138,7 +138,7 @@ class Model:
             self._merge_props(os_props)
 
         # Replace ${...} expressions in property values.
-        for k in self.props:
+        for k in list(self.props):
             Model._propvalue(k, self.props)
 
         # Replace ${...} expressions in dependency coordinate values.
@@ -877,10 +877,12 @@ class Model:
 
         expression = props.get(propname, None)
         if expression is None:
+            # Resolve (and cache) a legacy alias under its project.* name, never
+            # adding a key: callers may be iterating over props.
             alias = _legacy_project_alias(propname)
             if alias is None or alias not in props:
                 return None
-            expression = props[alias]
+            return Model._propvalue(alias, props, visited)
         evaluated = Model._evaluate(expression, props, visited)
         props[propname] = evaluated
         return evaluated
