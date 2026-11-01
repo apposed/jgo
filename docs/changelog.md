@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.1
+
+### Bug fixes
+
+- **Interpolate properties that use legacy aliases** -- A POM property whose value used a Maven 2-era alias such as `${version}` (supported since 3.3.0) failed with `dictionary changed size during iteration`, because the alias's value was cached under a new property name while the properties were being interpolated. Under lenient resolution, the POM and its whole subtree were then silently dropped from transitive dependencies; e.g. `org.hamcrest:hamcrest-core:1.1` and several JBoss and Grizzly artifacts were affected.
+
 ## 3.3.0
 
 ### New features
@@ -7,8 +13,16 @@
 - **Query a component's packaging** -- The new `Component.packaging` property reports the `<packaging>` declared in the component's POM (e.g. `jar`, `pom`, `bundle`, `maven-plugin`), defaulting to `jar` as Maven does.
 - **`javainfo` analyzes a project's own classes** -- Given a project's `pom.xml` (or its directory), `jgo info javainfo` now analyzes the project's build output alongside its dependencies: `target/classes` if compiled, else the packaged `target/<artifactId>-<version>.jar`, honoring any `<build>` settings inherited from parent POMs. If the project has not been built, it warns rather than silently analyzing only the dependencies; it does not fall back to the local repository, whose copy may be a different build. Any other POM file (e.g. `foo-1.0.pom`, now also recognized by `.pom` suffix) is treated as published, and its artifact is resolved from the repository instead.
 
+- **Remember missing artifacts** -- A remote 404 for an artifact is now recorded beside where the artifact would be cached, and the request is not repeated while the record is fresh: `MavenContext(miss_ttl=...)` seconds, a day by default. On Maven Central, whose releases are immutable, a miss is remembered for good once the artifact's version is known to exist (its POM is cached), so e.g. a missing `-javadoc` JAR is never requested again. SNAPSHOT misses are not recorded, but are requested only once per `MavenContext`. `MavenContext(update=True)`, set by the CLI's `-u`/`--update`, disregards recorded misses.
+- **Pace and count requests** -- `MavenContext(min_interval=...)` spaces requests to each of its remote repositories' hosts at least that many seconds apart, across all threads, bounding the load of heavily parallel resolution. `jgo.util.http.request_counts()` reports the number of requests made per host.
+- **Identify jgo in requests** -- Requests now send a `User-Agent` naming jgo and its version, rather than the generic one of `requests`. An application using jgo can prepend its own name via `jgo.util.http.set_user_agent()`.
+- **Fail fast when a repository refuses access** -- With `MavenContext(fail_on_denied=True)`, an HTTP 401 or 403 raises the new `RepositoryAccessDenied`, also from lenient model building, so a block by a repository stops resolution instead of reading as many missing artifacts. By default, jgo warns once per host, quoting the server's explanation.
+- **Resolve legacy project property aliases** -- Maven 2-era POMs refer to the project's coordinates as `${pom.version}`, `${pom.groupId}`, or unprefixed `${version}`, `${groupId}`, `${artifactId}`, `${parent.version}` and so on. Like Maven 3, jgo now resolves these when no property of that name exists, rather than dropping dependencies declared with them.
+
 ### Bug fixes
 
+- **Stop caching denials and server errors as missing metadata** -- Any non-200 response to a `maven-metadata.xml` request was recorded as a 404, so a temporary refusal or server error hid the project's metadata for as long as the record was considered fresh. Only a real 404 is recorded now.
+- **Report rate limiting** -- Retries after an HTTP 429 are now logged as warnings rather than debug messages.
 - **`javainfo --self` on a POM analyzed the POM file** -- `jgo info javainfo --self <pom>` resolved the project's `.pom` file rather than its JAR, so it always reported no analyzable classes.
 
 - **Resolve non-JAR packaging types correctly** -- Packaging types whose file extension differs from the type name now resolve to the right file, following Maven's standard artifact handlers. For example, `g:a:test-jar:v` now resolves `a-v-tests.jar` rather than looking for a nonexistent `a-v.test-jar`, and `maven-plugin`, `bundle`, `ejb`, `ejb-client`, `java-source`, and `javadoc` types work too. This applies to both resolvers, SNAPSHOT lookups, and lock file checksum verification.
