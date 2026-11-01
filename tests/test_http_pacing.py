@@ -1,7 +1,10 @@
 """Tests for per-host request counting and throttling."""
 
+import itertools
 import threading
 import time
+from collections.abc import Iterator
+from typing import Any, ClassVar
 
 import pytest
 
@@ -11,14 +14,14 @@ from jgo.util import http
 
 class FakeResponse:
     status_code = 200
-    headers: dict[str, str] = {}
+    headers: ClassVar[dict[str, str]] = {}
 
 
 @pytest.fixture
-def fake_requests(monkeypatch):
+def fake_requests(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[float, str]]]:
     sent: list[tuple[float, str]] = []
 
-    def fake(method, url, **kwargs):
+    def fake(method: str, url: str, **kwargs: Any) -> FakeResponse:
         sent.append((time.monotonic(), url))
         return FakeResponse()
 
@@ -50,7 +53,7 @@ def test_throttle_spaces_requests_across_threads(fake_requests):
     for t in threads:
         t.join()
     times = sorted(t for t, _ in fake_requests)
-    gaps = [b - a for a, b in zip(times, times[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(times)]
     assert len(gaps) == 3
     assert min(gaps) >= 0.045
 

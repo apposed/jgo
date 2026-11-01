@@ -2,6 +2,7 @@
 
 import os
 import time
+from typing import Any
 
 import pytest
 
@@ -24,12 +25,14 @@ class FakeResponse:
 
 
 @pytest.fixture
-def requests_log(monkeypatch):
+def requests_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[str], dict[str, FakeResponse]]:
     """Record every requested URL; answer with the status in ``statuses``."""
     log: list[str] = []
     statuses: dict[str, FakeResponse] = {}
 
-    def fake_request(method, url, **kwargs):
+    def fake_request(method: str, url: str, **kwargs: Any) -> FakeResponse:
         log.append(url)
         for prefix, response in statuses.items():
             if url.startswith(prefix):
@@ -126,7 +129,7 @@ def test_update_ignores_cached_misses(tmp_path, requests_log):
 
 
 def test_snapshot_misses_are_not_cached(tmp_path, requests_log):
-    log, _ = requests_log
+    _log, _ = requests_log
     ctx = _context(tmp_path, {"other": OTHER})
     artifact = _javadoc(ctx, "1.0-SNAPSHOT")
     for _ in range(2):
