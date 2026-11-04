@@ -476,3 +476,115 @@ def test_explicit_constraints_override_context_resolver():
 
     assert model.profile_constraints is explicit
     assert model.profile_constraints.os_name == "Windows XP"
+
+
+# Maven activation semantics
+
+
+def _profile(*conditions, profile_id="p"):
+    """Build a profile element whose activation holds the given conditions."""
+    profile = ET.Element("profile")
+    ET.SubElement(profile, "id").text = profile_id
+    activation = ET.SubElement(profile, "activation")
+    for tag, children in conditions:
+        cond = ET.SubElement(activation, tag)
+        if isinstance(children, str):
+            cond.text = children
+        else:
+            for child_tag, text in children.items():
+                ET.SubElement(cond, child_tag).text = text
+    return profile
+
+
+def _model(**constraints):
+    return Model(MockPOM(), _ctx, profile_constraints=ProfileConstraints(**constraints))
+
+
+def test_profile_activation_os_case_insensitive():
+    """Maven compares OS values case-insensitively (e.g. OpenJFX's 'linux')."""
+    profile = _profile(("os", {"name": "linux", "arch": "AMD64"}))
+    assert _model(os_name="Linux", os_arch="amd64")._is_active_profile(profile)
+
+
+def test_profile_activation_conditions_are_anded():
+    """All present activators must match, not just one (Maven 3.2.2+)."""
+    profile = _profile(
+        ("os", {"name": "linux"}),
+        ("property", {"name": "foo", "value": "bar"}),
+    )
+    assert not _model(os_name="Linux")._is_active_profile(profile)
+    assert _model(os_name="Linux", properties={"foo": "bar"})._is_active_profile(
+        profile
+    )
+    assert not _model(os_name="Windows", properties={"foo": "bar"})._is_active_profile(
+        profile
+    )
+
+
+def test_profile_activation_property_negated_value():
+    """A !value matches any other value, including an absent property."""
+    profile = _profile(("property", {"name": "javafx.monocle", "value": "!true"}))
+    assert _model()._is_active_profile(profile)
+    assert _model(properties={"javafx.monocle": "false"})._is_active_profile(profile)
+    assert not _model(properties={"javafx.monocle": "true"})._is_active_profile(profile)
+
+
+def test_profile_activation_property_negated_name():
+    """A !name matches when the property is absent."""
+    profile = _profile(("property", {"name": "!foo"}))
+    assert _model()._is_active_profile(profile)
+    assert not _model(properties={"foo": "x"})._is_active_profile(profile)
+
+
+def test_profile_activation_os_family_rules():
+    """Family matching follows plexus-utils Os.isFamily."""
+    unix = _profile(("os", {"family": "unix"}))
+    mac = _profile(("os", {"family": "mac"}))
+    windows = _profile(("os", {"family": "Windows"}))
+    assert _model(os_name="Mac OS X", os_family="mac")._is_active_profile(unix)
+    assert _model(os_name="Mac OS X", os_family="mac")._is_active_profile(mac)
+    assert _model(os_name="Linux", os_family="unix")._is_active_profile(unix)
+    assert not _model(os_name="Linux", os_family="unix")._is_active_profile(windows)
+    assert _model(os_name="Windows 11", os_family="windows")._is_active_profile(windows)
+    assert not _model(os_name="Windows 11", os_family="windows")._is_active_profile(
+        unix
+    )
+
+
+def test_active_by_default_only_without_other_active_profiles():
+    """activeByDefault profiles apply only if no other profile of the POM is active."""
+
+    class ProfilesPOM(MockPOM):
+        def __init__(self, *profiles):
+            self.profiles = list(profiles)
+
+        def elements(self, xpath):
+            return self.profiles if xpath == "profiles/profile" else []
+
+    def props_profile(conditions, key):
+        profile = _profile(*conditions, profile_id=key)
+        ET.SubElement(ET.SubElement(profile, "properties"), key).text = "on"
+        return profile
+
+    default = props_profile([("activeByDefault", "true")], "default")
+    linux = props_profile([("os", {"name": "linux"})], "linux")
+
+    constraints = ProfileConstraints(os_name="Linux")
+    pom = ProfilesPOM(default, linux)
+    model = Model(pom, _ctx, profile_constraints=constraints)
+    assert model.props.get("linux") == "on"
+    assert "default" not in model.props
+
+    constraints = ProfileConstraints(os_name="Windows")
+    model = Model(pom, _ctx, profile_constraints=constraints)
+    assert model.props.get("default") == "on"
+    assert "linux" not in model.props
+
+
+def test_user_properties_override_model_properties():
+    """-D properties take precedence over POM properties, as in Maven."""
+    pom = MockPOM()
+    pom.properties = {"javafx.platform": "linux"}
+    constraints = ProfileConstraints(properties={"javafx.platform": "linux-aarch64"})
+    model = Model(pom, _ctx, profile_constraints=constraints)
+    assert model.props["javafx.platform"] == "linux-aarch64"

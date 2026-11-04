@@ -130,12 +130,11 @@ class Model:
                 os_props["os.version"] = self.profile_constraints.os_version
             if self.profile_constraints.basedir:
                 os_props["basedir"] = self.profile_constraints.basedir
-            # Also inject any explicit properties from constraints
-            for k, v in self.profile_constraints.properties.items():
-                if k not in os_props:
-                    os_props[k] = v
             # Merge with lowest priority (don't override existing props)
             self._merge_props(os_props)
+            # Note: As in Maven, user properties (-D) take precedence over model
+            # properties, so a POM cannot shadow a value the user set explicitly.
+            self.props.update(self.profile_constraints.properties)
 
         # Replace ${...} expressions in property values.
         for k in list(self.props):
@@ -582,12 +581,12 @@ class Model:
         """
         Activate and inject profiles from the given POM.
         """
-        # Compute active profiles.
-        active_profiles = [
-            profile
-            for profile in pom.elements("profiles/profile")
-            if self._is_active_profile(profile)
-        ]
+        # Compute active profiles. As in Maven, activeByDefault profiles apply
+        # only when no other profile of the same POM is activated.
+        profiles = pom.elements("profiles/profile")
+        active_profiles = [p for p in profiles if self._is_active_profile(p)]
+        if not active_profiles:
+            active_profiles = [p for p in profiles if self._is_active_by_default(p)]
 
         # Merge values from the active profiles into the model.
         for profile in active_profiles:
@@ -687,7 +686,15 @@ class Model:
             for exclusion in exclusions
         )
 
-    def _is_active_profile(self, el):
+    def _is_active_profile(self, el) -> bool:
+        """
+        Check whether a profile's activation conditions are satisfied.
+
+        Mirrors Maven's DefaultProfileSelector: every activator present in the
+        <activation> block (jdk, os, property, file) must match, and at least one
+        must be present. The activeByDefault flag is not considered here; see
+        _is_active_by_default and _inject_profiles.
+        """
         activation = el.find("activation")
         if activation is None:
             return False
@@ -695,153 +702,135 @@ class Model:
         profile_id_el = el.find("id")
         profile_id = profile_id_el.text if profile_id_el is not None else "<unknown>"
 
-        # Check all conditions in the activation block.
+        checks = {
+            "jdk": self._jdk_matches,
+            "os": self._os_matches,
+            "property": self._property_matches,
+            "file": self._file_matches,
+        }
+        present = False
         for condition in activation:
-            if condition.tag == "activeByDefault":
-                if condition.text == "true":
-                    _log.debug(f"Profile '{profile_id}' activated by activeByDefault")
-                    return True
+            check = checks.get(condition.tag)
+            if check is None:
+                continue  # activeByDefault, or an unknown activator
+            present = True
+            if not check(condition):
+                return False
 
-            elif condition.tag == "jdk":
-                if not self.profile_constraints or not self.profile_constraints.jdk:
-                    continue
+        if present:
+            _log.debug(f"Profile '{profile_id}' activated")
+        return present
 
-                jdk_spec = condition.text
-                if not jdk_spec:
-                    continue
+    @staticmethod
+    def _is_active_by_default(el) -> bool:
+        flag = el.find("activation/activeByDefault")
+        return flag is not None and (flag.text or "").strip() == "true"
 
-                # Handle negation
-                negated = jdk_spec.startswith("!")
-                if negated:
-                    jdk_spec = jdk_spec[1:]
+    def _jdk_matches(self, condition) -> bool:
+        if not self.profile_constraints or not self.profile_constraints.jdk:
+            return False
 
-                try:
-                    current_version = parse_java_version(self.profile_constraints.jdk)
-                    lower, upper, lower_inc, upper_inc = parse_jdk_activation_range(
-                        jdk_spec
-                    )
-                    matches = version_matches_jdk_range(
-                        current_version, lower, upper, lower_inc, upper_inc
-                    )
+        jdk_spec = (condition.text or "").strip()
+        if not jdk_spec:
+            return False
 
-                    if negated:
-                        matches = not matches
+        negated = jdk_spec.startswith("!")
+        if negated:
+            jdk_spec = jdk_spec[1:]
 
-                    if matches:
-                        _log.debug(
-                            f"Profile '{profile_id}' activated by jdk {condition.text}"
-                        )
-                        return True
-                except ValueError as e:
-                    _log.warning(
-                        f"Invalid JDK version specification '{condition.text}'"
-                        f" in {self.gav}: {e}"
-                    )
-                    _log.debug(
-                        f"POM source: {getattr(self.pom, 'source', '<unknown>')}"
-                    )
-                    continue
+        try:
+            current_version = parse_java_version(self.profile_constraints.jdk)
+            lower, upper, lower_inc, upper_inc = parse_jdk_activation_range(jdk_spec)
+            matches = version_matches_jdk_range(
+                current_version, lower, upper, lower_inc, upper_inc
+            )
+        except ValueError as e:
+            _log.warning(
+                f"Invalid JDK version specification '{condition.text}'"
+                f" in {self.gav}: {e}"
+            )
+            _log.debug(f"POM source: {getattr(self.pom, 'source', '<unknown>')}")
+            return False
 
-            elif condition.tag == "os":
-                # <name>Windows XP</name>
-                # <family>Windows</family>
-                # <arch>x86</arch>
-                # <version>5.1.2600</version>
+        return not matches if negated else matches
 
-                if not self.profile_constraints:
-                    continue
+    def _os_matches(self, condition) -> bool:
+        # <name>Windows XP</name>
+        # <family>Windows</family>
+        # <arch>x86</arch>
+        # <version>5.1.2600</version>
+        constraints = self.profile_constraints
+        if not constraints:
+            return False
 
-                match = True
-                for os_condition in condition:
-                    if os_condition.tag == "name":
-                        # Maven uses ! to negate
-                        text = os_condition.text
-                        if text.startswith("!"):
-                            if self.profile_constraints.os_name == text[1:]:
-                                match = False
-                        elif self.profile_constraints.os_name != text:
-                            match = False
-                    elif os_condition.tag == "family":
-                        text = os_condition.text
-                        if text.startswith("!"):
-                            if self.profile_constraints.os_family == text[1:]:
-                                match = False
-                        elif self.profile_constraints.os_family != text:
-                            match = False
-                    elif os_condition.tag == "arch":
-                        text = os_condition.text
-                        if text.startswith("!"):
-                            if self.profile_constraints.os_arch == text[1:]:
-                                match = False
-                        elif self.profile_constraints.os_arch != text:
-                            match = False
-                    elif os_condition.tag == "version":
-                        text = os_condition.text
-                        if text.startswith("!"):
-                            if self.profile_constraints.os_version == text[1:]:
-                                match = False
-                        elif self.profile_constraints.os_version != text:
-                            match = False
-                if match:
-                    _log.debug(f"Profile '{profile_id}' activated by os")
-                    return True
+        for os_condition in condition:
+            text = (os_condition.text or "").strip()
+            negated = text.startswith("!")
+            if negated:
+                text = text[1:]
+            # Note: Maven compares all OS values case-insensitively.
+            text = text.lower()
 
-            elif condition.tag == "property":
-                # <name>sparrow-type</name>
-                # <value>African</value>
+            if os_condition.tag == "family":
+                matches = _os_is_family(
+                    text, constraints.os_name, constraints.os_family
+                )
+            elif os_condition.tag in ("name", "arch", "version"):
+                actual = getattr(constraints, f"os_{os_condition.tag}")
+                matches = actual is not None and actual.lower() == text
+            else:
+                continue
 
-                if not self.profile_constraints:
-                    continue
+            if matches == negated:
+                return False
+        return True
 
-                name = condition.find("name").text
-                value = condition.find("value")
-                value = value.text if value is not None else None
+    def _property_matches(self, condition) -> bool:
+        # <name>sparrow-type</name>
+        # <value>African</value>
+        if not self.profile_constraints:
+            return False
 
-                if name in self.profile_constraints.properties:
-                    if value is None:
-                        # Property existence check
-                        _log.debug(
-                            f"Profile '{profile_id}' activated by property {name}"
-                        )
-                        return True
-                    elif self.profile_constraints.properties[name] == value:
-                        # Property value check
-                        _log.debug(
-                            f"Profile '{profile_id}' activated by property {name}={value}"
-                        )
-                        return True
+        name_el = condition.find("name")
+        name = (name_el.text or "").strip() if name_el is not None else ""
+        if not name:
+            return False
+        reverse_name = name.startswith("!")
+        if reverse_name:
+            name = name[1:]
 
-            elif condition.tag == "file":
-                # <file>
-                # <exists>${basedir}/file2.properties</exists>
-                # <missing>${basedir}/file1.properties</missing>
+        actual = self.profile_constraints.properties.get(name)
 
-                if not self.profile_constraints:
-                    continue
+        value_el = condition.find("value")
+        value = (value_el.text or "").strip() if value_el is not None else ""
+        if value:
+            # Note: As in Maven, a leading ! on the value means "not equal to",
+            # which an absent property also satisfies.
+            reverse_value = value.startswith("!")
+            if reverse_value:
+                value = value[1:]
+            return (value == actual) != reverse_value
 
-                # Check for <exists> condition
-                exists_el = condition.find("exists")
-                if exists_el is not None and exists_el.text:
-                    # Interpolate the path
-                    file_path = Model._evaluate(exists_el.text, self.props)
-                    # Check if file exists using the injected function
-                    if self.profile_constraints.file_exists(file_path):
-                        _log.debug(
-                            f"Profile '{profile_id}' activated by file exists: {file_path}"
-                        )
-                        return True
+        exists = bool(actual)
+        return exists != reverse_name
 
-                # Check for <missing> condition
-                missing_el = condition.find("missing")
-                if missing_el is not None and missing_el.text:
-                    # Interpolate the path
-                    file_path = Model._evaluate(missing_el.text, self.props)
-                    # Check if file is missing using the injected function
-                    if not self.profile_constraints.file_exists(file_path):
-                        _log.debug(
-                            f"Profile '{profile_id}' activated by file missing: {file_path}"
-                        )
-                        return True
+    def _file_matches(self, condition) -> bool:
+        # <file>
+        # <exists>${basedir}/file2.properties</exists>
+        # <missing>${basedir}/file1.properties</missing>
+        if not self.profile_constraints:
+            return False
+
+        # Note: As in Maven, <missing> takes precedence over <exists>.
+        missing_el = condition.find("missing")
+        if missing_el is not None and missing_el.text:
+            file_path = Model._evaluate(missing_el.text, self.props)
+            return not self.profile_constraints.file_exists(file_path)
+
+        exists_el = condition.find("exists")
+        if exists_el is not None and exists_el.text:
+            file_path = Model._evaluate(exists_el.text, self.props)
+            return self.profile_constraints.file_exists(file_path)
 
         return False
 
@@ -916,3 +905,37 @@ def _legacy_project_alias(propname: str) -> str | None:
     if propname in _UNPREFIXED_PROJECT_FIELDS:
         return "project." + propname
     return None
+
+
+def _os_is_family(family: str, os_name: str | None, os_family: str | None) -> bool:
+    """
+    Check whether the OS belongs to the given (lowercase) family.
+
+    Follows the rules of plexus-utils Os.isFamily, which Maven uses for <os>
+    profile activation, falling back to comparing against the declared family.
+    """
+    if os_family and os_family.lower() == family:
+        return True
+    if not os_name:
+        return False
+    name = os_name.lower()
+    is_windows = "windows" in name
+    if family == "windows":
+        return is_windows
+    if family == "win9x":
+        return is_windows and any(v in name for v in ("95", "98", "me", "ce"))
+    if family == "winnt":
+        return is_windows and not any(v in name for v in ("95", "98", "me", "ce"))
+    if family == "dos":
+        return is_windows or "netware" in name or "os/2" in name
+    if family == "mac":
+        return "mac" in name
+    if family == "unix":
+        return not (
+            is_windows
+            or any(v in name for v in ("os/2", "netware", "openvms", "z/os", "os/400"))
+            or ("mac" in name and not name.endswith("x"))
+        )
+    if family in ("os/2", "netware", "openvms", "z/os", "os/400", "tandem"):
+        return family.replace("tandem", "nonstop_kernel") in name
+    return False
