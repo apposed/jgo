@@ -588,3 +588,44 @@ def test_user_properties_override_model_properties():
     constraints = ProfileConstraints(properties={"javafx.platform": "linux-aarch64"})
     model = Model(pom, _ctx, profile_constraints=constraints)
     assert model.props["javafx.platform"] == "linux-aarch64"
+
+
+def test_later_active_profile_overrides_earlier():
+    """As in Maven, a later active profile's values override an earlier one's.
+
+    E.g. on Apple Silicon, pom-scijava-base activates both its aarch64 and macos
+    profiles, and the latter must win, setting scijava.platform.arch.jogamp to
+    "universal" rather than "aarch64".
+    """
+
+    def profile(profile_id, arch_jogamp, version):
+        p = _profile(("property", {"name": "go"}), profile_id=profile_id)
+        props = ET.SubElement(p, "properties")
+        ET.SubElement(props, "arch.jogamp").text = arch_jogamp
+        dep_mgmt = ET.SubElement(
+            ET.SubElement(p, "dependencyManagement"), "dependencies"
+        )
+        dep = ET.SubElement(dep_mgmt, "dependency")
+        ET.SubElement(dep, "groupId").text = "org.example"
+        ET.SubElement(dep, "artifactId").text = "lib"
+        ET.SubElement(dep, "version").text = version
+        return p
+
+    class ProfilesPOM(MockPOM):
+        def elements(self, xpath):
+            if xpath == "profiles/profile":
+                return [
+                    profile("aarch64", "aarch64", "1.0"),
+                    profile("macos", "universal", "2.0"),
+                ]
+            return []
+
+    model = Model(
+        ProfilesPOM(),
+        _ctx,
+        profile_constraints=ProfileConstraints(properties={"go": "1"}),
+    )
+
+    assert model.props["arch.jogamp"] == "universal"
+    managed = [d for d in model.dep_mgmt.values() if d.artifactId == "lib"]
+    assert [d.version for d in managed] == ["2.0"]

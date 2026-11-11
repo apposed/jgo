@@ -5,6 +5,7 @@
 ### Bug fixes
 
 - **Match Maven semantics for profile activation** -- POM profiles are now activated as Maven's `DefaultProfileSelector` does: OS name, arch and version compare case-insensitively; all of a profile's activators must match, rather than any one; negated property names (`!name`) and values (`!value`) are supported; OS families follow the rules of plexus-utils `Os.isFamily`; and `activeByDefault` profiles apply only when no other profile of the same POM is active. Previously, e.g. the OpenJFX parent POM's `<os><name>linux</name></os>` profiles never matched, so `org.openjfx:javafx-base:${javafx.platform}` and similar dependencies were left uninterpolated and failed to resolve. Also, user properties (`-D`) now take precedence over model properties during interpolation, as in Maven.
+- **Later active profiles override earlier ones** -- When several profiles of the same POM are active and set the same property or dependency, the last one declared now wins, as in Maven; previously the first one did. E.g. on Apple Silicon, pom-scijava-base activates both its `scijava-platform-aarch64` and `scijava-platform-macos` profiles, so `scijava.platform.arch.jogamp` became `aarch64` instead of `universal`, and the resulting `natives-macosx-aarch64` classifiers of JOGL and GlueGen had no managed versions.
 
 ## 3.3.1
 

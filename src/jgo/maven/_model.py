@@ -589,7 +589,9 @@ class Model:
             active_profiles = [p for p in profiles if self._is_active_by_default(p)]
 
         # Merge values from the active profiles into the model.
-        for profile in active_profiles:
+        # Note: Merging keeps the first value seen, whereas in Maven, later
+        # profiles override earlier ones, so merge in reverse declaration order.
+        for profile in reversed(active_profiles):
             profile_dep_els = profile.findall("dependencies/dependency")
             profile_deps = [
                 self.context.parse_dependency_element(el) for el in profile_dep_els
